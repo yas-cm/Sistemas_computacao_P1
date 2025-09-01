@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Comunicação entre processos</title>
+        <link rel="stylesheet" href="../style/style.css" />
+    </head>
+    <body>
+        <h1>Comunicação entre processos</h1>
+        <h4>Yasmin Cardoso Magagnin</h4>
+        <div class="container">
+            <label for="tipo-comunicacao">Tipo de comunicação:</label>
+            <select id="tipo-comunicacao">
+                <option value="pipes">Pipes</option>
+                <option value="socket">Sockets</option>
+                <option value="memcomp">Memória Compartilhada</option>
+            </select>
+
+            <label for="enviar-msg">Enviar mensagem:</label>
+            <textarea
+                id="enviar-msg"
+                rows="3"
+                placeholder="Digite sua mensagem aqui..."
+            ></textarea>
+
+            <button id="btn-enviar" type="button">Enviar</button>
+
+            <label for="receber-msg">Receber mensagem:</label>
+            <textarea
+                id="receber-msg"
+                rows="3"
+                readonly
+                placeholder="A mensagem recebida aparecerá aqui..."
+            ></textarea>
+        </div>
+        <script>
+            document.getElementById("btn-enviar").onclick = async function () {
+                const mensagem = document.getElementById("enviar-msg").value;
+                const tipo = document.getElementById("tipo-comunicacao").value;
+                if (tipo !== "pipes") {
+                    alert("Por enquanto, só Pipes está implementado!");
+                    return;
+                }
+                document.getElementById("receber-msg").value = "Enviando...";
+                const resp = await fetch("/enviar", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ mensagem }),
+                });
+                const data = await resp.json();
+                document.getElementById("receber-msg").value =
+                    data.mensagem || "Erro ao receber mensagem";
+            };
+        </script>
+    </body>
+</html>
