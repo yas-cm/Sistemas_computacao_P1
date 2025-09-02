@@ -9,49 +9,137 @@
     <body>
         <h1>Comunicação entre processos</h1>
         <h4>Yasmin Cardoso Magagnin</h4>
-        <div class="container">
-            <label for="tipo-comunicacao">Tipo de comunicação:</label>
-            <select id="tipo-comunicacao">
-                <option value="pipes">Pipes</option>
-                <option value="socket">Sockets</option>
-                <option value="memcomp">Memória Compartilhada</option>
-            </select>
 
-            <label for="enviar-msg">Enviar mensagem:</label>
-            <textarea
-                id="enviar-msg"
-                rows="3"
-                placeholder="Digite sua mensagem aqui..."
-            ></textarea>
+        <div class="main-container">
+            <div class="form-container">
+                <label for="tipo-comunicacao">Tipo de comunicação:</label>
+                <select id="tipo-comunicacao">
+                    <option value="pipes">Pipes</option>
+                    <option value="socket">Sockets</option>
+                    <option value="memcomp">Memória Compartilhada</option>
+                </select>
 
-            <button id="btn-enviar" type="button">Enviar</button>
+                <label for="enviar-msg">Enviar mensagem:</label>
+                <textarea
+                    id="enviar-msg"
+                    rows="3"
+                    placeholder="Digite sua mensagem aqui..."
+                ></textarea>
 
-            <label for="receber-msg">Receber mensagem:</label>
-            <textarea
-                id="receber-msg"
-                rows="3"
-                readonly
-                placeholder="A mensagem recebida aparecerá aqui..."
-            ></textarea>
+                <button id="btn-enviar" type="button">Enviar</button>
+
+                <label for="receber-msg">Receber mensagem:</label>
+                <textarea
+                    id="receber-msg"
+                    rows="3"
+                    readonly
+                    placeholder="A mensagem recebida aparecerá aqui..."
+                ></textarea>
+            </div>
+
+            <div class="log-container">
+                <label for="log-display">Log da Comunicação:</label>
+                <div id="log-display" class="log-content">
+                    <div class="log-entry">
+                        Sistema iniciado. Aguardando mensagens...
+                    </div>
+                </div>
+            </div>
         </div>
+
         <script>
+            // Mapeamento de tipos de comunicação para nomes de processos
+            const processNames = {
+                pipes: { sender: "Processo1", receiver: "Processo2" },
+                socket: { sender: "Cliente", receiver: "Servidor" },
+                memcomp: { sender: "ProcessoA", receiver: "ProcessoB" },
+            };
+
             document.getElementById("btn-enviar").onclick = async function () {
                 const mensagem = document.getElementById("enviar-msg").value;
                 const tipo = document.getElementById("tipo-comunicacao").value;
-                if (tipo !== "pipes") {
-                    alert("Por enquanto, só Pipes está implementado!");
+
+                if (!processNames[tipo]) {
+                    alert("Selecione um tipo de comunicação válido!");
                     return;
                 }
+
+                const { sender, receiver } = processNames[tipo];
+
                 document.getElementById("receber-msg").value = "Enviando...";
-                const resp = await fetch("/enviar", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ mensagem }),
-                });
-                const data = await resp.json();
-                document.getElementById("receber-msg").value =
-                    data.mensagem || "Erro ao receber mensagem";
+                addLogEntry(
+                    `${sender} enviando mensagem: "${mensagem}" via ${tipo}`,
+                    "info"
+                );
+
+                try {
+                    const resp = await fetch("/enviar", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ mensagem, tipo }),
+                    });
+
+                    const data = await resp.json();
+
+                    if (data.status === "sucesso") {
+                        document.getElementById("receber-msg").value =
+                            data.mensagem_recebida ||
+                            data.mensagem ||
+                            "Mensagem recebida";
+                        addLogEntry(
+                            `✅ Sucesso: Mensagem "${data.mensagem_enviada}" enviada pelo ${sender} e "${data.mensagem_recebida}" recebida pelo ${receiver}`,
+                            "success"
+                        );
+                    } else {
+                        document.getElementById("receber-msg").value =
+                            "Erro ao receber mensagem";
+                        addLogEntry(
+                            `❌ Erro: Falha na comunicação via ${tipo} entre ${sender} e ${receiver}`,
+                            "error"
+                        );
+                    }
+                } catch (error) {
+                    document.getElementById("receber-msg").value =
+                        "Erro de conexão";
+                    addLogEntry(
+                        `❌ Erro de conexão com o servidor: ${error.message}`,
+                        "error"
+                    );
+                }
             };
+
+            function addLogEntry(message, type = "info") {
+                const logDisplay = document.getElementById("log-display");
+                const logEntry = document.createElement("div");
+                logEntry.className = `log-entry ${type}`;
+
+                // Adiciona milissegundos ao timestamp
+                const now = new Date();
+                const hours = now.getHours().toString().padStart(2, "0");
+                const minutes = now.getMinutes().toString().padStart(2, "0");
+                const seconds = now.getSeconds().toString().padStart(2, "0");
+                const milliseconds = now
+                    .getMilliseconds()
+                    .toString()
+                    .padStart(3, "0");
+
+                logEntry.textContent = `[${hours}:${minutes}:${seconds}.${milliseconds}] ${message}`;
+                logDisplay.prepend(logEntry);
+
+                // Mantém apenas as últimas 20 entradas no log
+                if (logDisplay.children.length > 20) {
+                    logDisplay.removeChild(logDisplay.lastChild);
+                }
+
+                // Scroll automático para o topo
+                logDisplay.scrollTop = 0;
+            }
+
+            // Inicializa o log com mensagem informativa
+            addLogEntry(
+                "Sistema iniciado. Selecione o tipo de comunicação e digite uma mensagem.",
+                "info"
+            );
         </script>
     </body>
 </html>

@@ -1,5 +1,5 @@
 {
-    "tipo_comunicacao": "pipes",
-    "mensagem": "pipes comunication",
+    "mensagem_enviada": "oi",
+    "mensagem_recebida": "oi",
     "status": "sucesso"
 }

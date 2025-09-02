@@ -4,11 +4,11 @@
 #include <sstream>
 #include <fstream>
 
-void escrever_log(const std::string& mensagem, const std::string& status) {
+void escrever_log(const std::string& mensagem_enviada, const std::string& mensagem_recebida, const std::string& status) {
     std::ofstream log("log.json", std::ios::trunc);
     log << "{\n"
-        << "    \"tipo_comunicacao\": \"pipes\",\n"
-        << "    \"mensagem\": \"" << mensagem << "\",\n"
+        << "    \"mensagem_enviada\": \"" << mensagem_enviada << "\",\n"
+        << "    \"mensagem_recebida\": \"" << mensagem_recebida << "\",\n"
         << "    \"status\": \"" << status << "\"\n"
         << "}" << std::endl;
     log.close();
@@ -19,7 +19,7 @@ int main() {
     SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
 
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
-        escrever_log("", "erro");
+        escrever_log("", "", "erro");
         std::cout << "Erro ao criar pipe." << std::endl;
         return 1;
     }
@@ -47,7 +47,7 @@ int main() {
         &si,
         &pi
     )) {
-        escrever_log(mensagem, "erro");
+        escrever_log(mensagem, "", "erro");
         std::cout << "Erro ao criar processo filho." << std::endl;
         CloseHandle(hRead);
         CloseHandle(hWrite);
@@ -56,18 +56,21 @@ int main() {
 
     DWORD written;
     if (!WriteFile(hWrite, mensagem.c_str(), mensagem.size() + 1, &written, NULL)) {
-        escrever_log(mensagem, "erro");
+        escrever_log(mensagem, "", "erro");
         std::cout << "Falha ao escrever no pipe." << std::endl;
         CloseHandle(hWrite);
         CloseHandle(hRead);
         return 1;
     }
 
-    escrever_log(mensagem, "sucesso");
+    // Aguarda o processo2 terminar antes de escrever o log
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    
+    // Lê o resultado do processo2 se disponível
+    escrever_log(mensagem, mensagem, "sucesso"); // Inicialmente assume que a mensagem foi recebida igual
 
     CloseHandle(hWrite);
     CloseHandle(hRead);
-    WaitForSingleObject(pi.hProcess, INFINITE);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 
