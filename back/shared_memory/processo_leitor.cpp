@@ -2,9 +2,10 @@
 #include <iostream>
 #include <string>
 #include <fstream>
-#include <tchar.h> // Adicionado para suporte a TCHAR
+#include <tchar.h>
+#include <stdexcept>
+#include <cctype>
 
-// A mesma estrutura de dados do escritor para interpretar a memória corretamente.
 struct SharedData {
     char message[256];
 };
@@ -20,74 +21,127 @@ void escrever_log(const std::string& mensagem_enviada, const std::string& mensag
 }
 
 int main() {
-    // --- PASSO 1: DEFINIR NOMES DOS OBJETOS ---
-    // Utiliza os mesmos nomes definidos pelo processo escritor para encontrar os objetos.
     LPCTSTR shm_name = TEXT("MySharedMemory");
     LPCTSTR mutex_name = TEXT("MySharedMutex");
+    HANDLE hMapFile = NULL;
+    SharedData* pBuf = NULL;
+    HANDLE hMutex = NULL;
+    bool mutex_acquired = false;
 
-    HANDLE hMapFile;
-    SharedData* pBuf;
+    // Função de limpeza garantida
+    auto cleanup = [&]() {
+        if (mutex_acquired && hMutex) {
+            ReleaseMutex(hMutex);
+            mutex_acquired = false;
+        }
+        if (hMutex) CloseHandle(hMutex);
+        if (pBuf) UnmapViewOfFile(pBuf);
+        if (hMapFile) CloseHandle(hMapFile);
+    };
 
-    // --- PASSO 2: ABRIR A MEMÓRIA COMPARTILHADA EXISTENTE ---
-    // OpenFileMapping tenta abrir um mapeamento de arquivo nomeado que já foi criado por outro processo.
-    hMapFile = OpenFileMapping(
-        FILE_MAP_ALL_ACCESS,   // Solicita acesso total de leitura/escrita
-        FALSE,                 // Não herdar o nome
-        shm_name);             // Nome do objeto a ser aberto
+    try {
+        // --- PASSO 1: ABRIR MEMÓRIA COMPARTILHADA ---
+        hMapFile = OpenFileMapping(
+            FILE_MAP_ALL_ACCESS,
+            FALSE,
+            shm_name
+        );
+        
+        if (hMapFile == NULL) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND) {
+                throw std::runtime_error("Memória compartilhada não encontrada. Execute o escritor primeiro.");
+            }
+            throw std::runtime_error("OpenFileMapping falhou: " + std::to_string(error));
+        }
 
-    if (hMapFile == NULL) {
+        // --- PASSO 2: MAPEAR MEMÓRIA ---
+        pBuf = (SharedData*)MapViewOfFile(
+            hMapFile,
+            FILE_MAP_ALL_ACCESS,
+            0,
+            0,
+            sizeof(SharedData)
+        );
+        
+        if (pBuf == NULL) {
+            throw std::runtime_error("MapViewOfFile falhou: " + std::to_string(GetLastError()));
+        }
+
+        // --- PASSO 3: ABRIR MUTEX ---
+        hMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, mutex_name);
+        if (hMutex == NULL) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND) {
+                throw std::runtime_error("Mutex não encontrado. Execute o escritor primeiro.");
+            }
+            throw std::runtime_error("OpenMutex falhou: " + std::to_string(error));
+        }
+
+        // --- PASSO 4: LER DA MEMÓRIA ---
+        std::cout << "[Leitor] Aguardando para ler da memoria (timeout: 10s)..." << std::endl;
+        
+        DWORD waitResult = WaitForSingleObject(hMutex, 10000);
+        if (waitResult == WAIT_TIMEOUT) {
+            throw std::runtime_error("Timeout: Não foi possível acessar a memória em 10 segundos");
+        }
+        if (waitResult != WAIT_OBJECT_0) {
+            throw std::runtime_error("Falha ao adquirir mutex: " + std::to_string(GetLastError()));
+        }
+        mutex_acquired = true;
+
+        std::string mensagem_recebida;
+        
+        // REGIÃO CRÍTICA - com proteção manual
+        try {
+            if (pBuf->message[0] == '\0') {
+                throw std::runtime_error("Memória compartilhada está vazia");
+            }
+            
+            bool valid_string = true;
+            size_t length = 0;
+            for (size_t i = 0; i < sizeof(pBuf->message); i++) {
+                if (pBuf->message[i] == '\0') {
+                    length = i;
+                    break;
+                }
+                if (!std::isprint(static_cast<unsigned char>(pBuf->message[i])) && 
+                    !std::isspace(static_cast<unsigned char>(pBuf->message[i]))) {
+                    valid_string = false;
+                    break;
+                }
+            }
+            
+            if (!valid_string || length == 0) {
+                throw std::runtime_error("Dados na memória estão corrompidos ou inválidos");
+            }
+            
+            mensagem_recebida = pBuf->message;
+            std::cout << "[Leitor] Mensagem recebida: " << mensagem_recebida << std::endl;
+        }
+        catch (...) {
+            // Libera mutex em caso de erro na região crítica
+            if (mutex_acquired) {
+                ReleaseMutex(hMutex);
+                mutex_acquired = false;
+            }
+            throw; // Re-lança a exceção
+        }
+        
+        // Liberação normal do mutex
+        ReleaseMutex(hMutex);
+        mutex_acquired = false;
+
+        // --- PASSO 5: LOG DE SUCESSO ---
+        escrever_log(mensagem_recebida, mensagem_recebida, "sucesso");
+        
+        cleanup();
+        return 0;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[Leitor] ERRO: " << e.what() << std::endl;
         escrever_log("", "", "erro");
-        std::cerr << "[Leitor] Erro ao abrir o file mapping: " << GetLastError() << std::endl;
+        cleanup();
         return 1;
     }
-
-    // --- PASSO 3: MAPEAR A MEMÓRIA PARA O PROCESSO ---
-    // Assim como no escritor, MapViewOfFile torna a memória acessível através do ponteiro `pBuf`.
-    pBuf = (SharedData*)MapViewOfFile(
-        hMapFile,
-        FILE_MAP_ALL_ACCESS,
-        0, 0, sizeof(SharedData));
-
-    if (pBuf == NULL) {
-        escrever_log("", "", "erro");
-        std::cerr << "[Leitor] Erro ao mapear a view do arquivo: " << GetLastError() << std::endl;
-        CloseHandle(hMapFile);
-        return 1;
-    }
-
-    // --- PASSO 4: ABRIR O MUTEX EXISTENTE ---
-    // OpenMutex abre um handle para o mutex que já foi criado pelo escritor.
-    HANDLE hMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, mutex_name);
-    if (hMutex == NULL) {
-        escrever_log("", "", "erro");
-        std::cerr << "[Leitor] Erro ao abrir o mutex: " << GetLastError() << std::endl;
-        UnmapViewOfFile(pBuf);
-        CloseHandle(hMapFile);
-        return 1;
-    }
-
-    // --- PASSO 5: LER DA MEMÓRIA (SEÇÃO CRÍTICA) ---
-    std::cout << "[Leitor] Aguardando para ler da memoria..." << std::endl;
-    // Trava o mutex para garantir que o escritor não modifique os dados durante a leitura.
-    WaitForSingleObject(hMutex, INFINITE); 
-
-    // -- INÍCIO DA SEÇÃO CRÍTICA --
-    std::string mensagem_recebida = pBuf->message;
-    // -- FIM DA SEÇÃO CRÍTICA --
-    
-    // Libera o mutex para outros processos.
-    ReleaseMutex(hMutex); 
-
-    std::cout << "[Leitor] Mensagem recebida: " << mensagem_recebida << std::endl;
-
-    // Escreve o log
-    escrever_log(mensagem_recebida, mensagem_recebida, "sucesso");
-
-    // --- PASSO 6: LIMPEZA DE RECURSOS ---
-    // Fecha os handles e libera a memória mapeada.
-    CloseHandle(hMutex);
-    UnmapViewOfFile(pBuf);
-    CloseHandle(hMapFile);
-
-    return 0;
 }

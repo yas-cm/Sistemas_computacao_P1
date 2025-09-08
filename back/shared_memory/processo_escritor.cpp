@@ -2,18 +2,16 @@
 #include <iostream>
 #include <string>
 #include <fstream>
-#include <tchar.h> // Adicionado para suporte a TCHAR
+#include <tchar.h>
+#include <stdexcept>
 
 // Estrutura que define o layout dos dados na memória compartilhada.
-// Deve ser idêntica em ambos os processos.
 struct SharedData {
     char message[256];
 };
 
-// Função utilitária para gerar um arquivo de log em formato JSON,
-// permitindo que a interface gráfica (frontend) monitore o resultado.
 void escrever_log(const std::string& mensagem_enviada, const std::string& mensagem_recebida, const std::string& status) {
-    std::ofstream log("log.json", std::ios::trunc); // std::ios::trunc apaga o conteúdo anterior do arquivo.
+    std::ofstream log("log.json", std::ios::trunc);
     log << "{\n"
         << "    \"mensagem_enviada\": \"" << mensagem_enviada << "\",\n"
         << "    \"mensagem_recebida\": \"" << mensagem_recebida << "\",\n"
@@ -23,107 +21,172 @@ void escrever_log(const std::string& mensagem_enviada, const std::string& mensag
 }
 
 int main() {
-    // --- PASSO 1: DEFINIR NOMES DOS OBJETOS ---
-    // Define nomes únicos para os objetos de memória e de sincronização.
-    // O processo leitor usará esses mesmos nomes para se conectar a eles.
     LPCTSTR shm_name = TEXT("MySharedMemory");
     LPCTSTR mutex_name = TEXT("MySharedMutex");
+    HANDLE hMapFile = NULL;
+    SharedData* pBuf = NULL;
+    HANDLE hMutex = NULL;
+    HANDLE hProcess = NULL;
+    HANDLE hThread = NULL;
+    bool mutex_acquired = false;
 
-    HANDLE hMapFile;
-    SharedData* pBuf;
+    // Função de limpeza garantida
+    auto cleanup = [&]() {
+        if (mutex_acquired && hMutex) {
+            ReleaseMutex(hMutex);
+            mutex_acquired = false;
+        }
+        if (hMutex) CloseHandle(hMutex);
+        if (pBuf) UnmapViewOfFile(pBuf);
+        if (hMapFile) CloseHandle(hMapFile);
+        if (hProcess) CloseHandle(hProcess);
+        if (hThread) CloseHandle(hThread);
+    };
 
-    // --- PASSO 2: CRIAR A MEMÓRIA COMPARTILHADA ---
-    // CreateFileMapping cria um "mapeamento de arquivo" na memória, que serve como nosso espaço compartilhado.
-    // INVALID_HANDLE_VALUE indica que a memória é volátil (não associada a um arquivo em disco).
-    hMapFile = CreateFileMapping(
-        INVALID_HANDLE_VALUE,    // Usar o arquivo de paginação do sistema
-        NULL,                    // Segurança padrão
-        PAGE_READWRITE,          // Acesso de leitura/escrita
-        0,                       // Tamanho máximo (high-order DWORD)
-        sizeof(SharedData),      // Tamanho do nosso bloco de dados
-        shm_name);               // Nome do objeto de mapeamento
+    try {
+        // --- PASSO 1: CRIAR MEMÓRIA COMPARTILHADA ---
+        hMapFile = CreateFileMapping(
+            INVALID_HANDLE_VALUE,
+            NULL,
+            PAGE_READWRITE,
+            0,
+            sizeof(SharedData),
+            shm_name
+        );
+        
+        if (hMapFile == NULL) {
+            throw std::runtime_error("CreateFileMapping falhou: " + std::to_string(GetLastError()));
+        }
 
-    if (hMapFile == NULL) {
+        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+            std::cout << "Aviso: Memória compartilhada já existia, reutilizando..." << std::endl;
+        }
+
+        // --- PASSO 2: MAPEAR MEMÓRIA ---
+        pBuf = (SharedData*)MapViewOfFile(
+            hMapFile,
+            FILE_MAP_ALL_ACCESS,
+            0,
+            0,
+            sizeof(SharedData)
+        );
+        
+        if (pBuf == NULL) {
+            throw std::runtime_error("MapViewOfFile falhou: " + std::to_string(GetLastError()));
+        }
+
+        // --- PASSO 3: CRIAR MUTEX ---
+        hMutex = CreateMutex(NULL, FALSE, mutex_name);
+        if (hMutex == NULL) {
+            throw std::runtime_error("CreateMutex falhou: " + std::to_string(GetLastError()));
+        }
+
+        // --- PASSO 4: OBTER MENSAGEM ---
+        std::string mensagem;
+        std::cout << "Digite a mensagem para enviar via Memoria Compartilhada:" << std::endl;
+        std::getline(std::cin, mensagem);
+
+        if (mensagem.empty()) {
+            throw std::runtime_error("Mensagem vazia não é permitida");
+        }
+        
+        if (mensagem.size() >= sizeof(pBuf->message)) {
+            throw std::runtime_error("Mensagem muito grande! Máximo: " + 
+                                   std::to_string(sizeof(pBuf->message) - 1) + " caracteres");
+        }
+
+        // --- PASSO 5: INICIAR PROCESSO LEITOR ---
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi;
+        std::string cmdLine = "processo_leitor.exe";
+
+        if (!CreateProcessA(
+            NULL,
+            &cmdLine[0],
+            NULL,
+            NULL,
+            FALSE,
+            0,
+            NULL,
+            NULL,
+            &si,
+            &pi
+        )) {
+            throw std::runtime_error("CreateProcess falhou: " + std::to_string(GetLastError()));
+        }
+        
+        hProcess = pi.hProcess;
+        hThread = pi.hThread;
+
+        // --- PASSO 6: ESCREVER NA MEMÓRIA ---
+        std::cout << "Aguardando para escrever na memoria (timeout: 10s)..." << std::endl;
+        
+        DWORD waitResult = WaitForSingleObject(hMutex, 10000);
+        if (waitResult == WAIT_TIMEOUT) {
+            throw std::runtime_error("Timeout: Mutex ocupado por mais de 10 segundos");
+        }
+        if (waitResult != WAIT_OBJECT_0) {
+            throw std::runtime_error("Falha ao adquirir mutex: " + std::to_string(GetLastError()));
+        }
+        mutex_acquired = true;
+
+        // REGIÃO CRÍTICA - com proteção manual
+        try {
+            ZeroMemory(pBuf->message, sizeof(pBuf->message));
+            
+            CopyMemory((PVOID)pBuf->message, mensagem.c_str(), mensagem.size() + 1);
+            
+            if (strncmp(pBuf->message, mensagem.c_str(), mensagem.size()) != 0) {
+                throw std::runtime_error("Falha na verificação da escrita - dados corrompidos");
+            }
+            
+            std::cout << "Mensagem escrita e verificada com sucesso: " << pBuf->message << std::endl;
+        }
+        catch (...) {
+            // Libera mutex em caso de erro na região crítica
+            if (mutex_acquired) {
+                ReleaseMutex(hMutex);
+                mutex_acquired = false;
+            }
+            throw; // Re-lança a exceção
+        }
+        
+        // Liberação normal do mutex
+        ReleaseMutex(hMutex);
+        mutex_acquired = false;
+
+        // --- PASSO 7: AGUARDAR PROCESSO LEITOR ---
+        std::cout << "Aguardando processo leitor terminar..." << std::endl;
+        
+        waitResult = WaitForSingleObject(pi.hProcess, 15000);
+        if (waitResult == WAIT_TIMEOUT) {
+            throw std::runtime_error("Timeout: Processo leitor não terminou em 15 segundos");
+        }
+        if (waitResult != WAIT_OBJECT_0) {
+            throw std::runtime_error("Erro ao aguardar processo leitor: " + std::to_string(GetLastError()));
+        }
+
+        DWORD exitCode;
+        if (!GetExitCodeProcess(pi.hProcess, &exitCode)) {
+            throw std::runtime_error("Falha ao obter código de saída do leitor: " + std::to_string(GetLastError()));
+        }
+        
+        if (exitCode != 0) {
+            throw std::runtime_error("Processo leitor falhou com código: " + std::to_string(exitCode));
+        }
+
+        std::cout << "Processo leitor terminou com sucesso." << std::endl;
+
+        // --- PASSO 8: LOG DE SUCESSO ---
+        escrever_log(mensagem, mensagem, "sucesso");
+        
+        cleanup();
+        return 0;
+
+    } catch (const std::exception& e) {
+        std::cerr << "ERRO CRÍTICO: " << e.what() << std::endl;
         escrever_log("", "", "erro");
-        std::cerr << "Erro ao criar o file mapping: " << GetLastError() << std::endl;
+        cleanup();
         return 1;
     }
-
-    // --- PASSO 3: MAPEAR A MEMÓRIA PARA O PROCESSO ---
-    // MapViewOfFile torna a memória compartilhada acessível dentro do espaço de endereçamento deste processo.
-    // A partir daqui, `pBuf` é um ponteiro para a área compartilhada.
-    pBuf = (SharedData*)MapViewOfFile(
-        hMapFile,                // Handle para o mapeamento
-        FILE_MAP_ALL_ACCESS,     // Permissão total de leitura/escrita
-        0, 0, sizeof(SharedData));
-
-    if (pBuf == NULL) {
-        escrever_log("", "", "erro");
-        std::cerr << "Erro ao mapear a view do arquivo: " << GetLastError() << std::endl;
-        CloseHandle(hMapFile);
-        return 1;
-    }
-
-    // --- PASSO 4: CRIAR O MUTEX PARA SINCRONIZAÇÃO ---
-    // CreateMutex cria um objeto de exclusão mútua (mutex).
-    // Ele funcionará como um "token": apenas o processo que possuir o token poderá escrever ou ler.
-    HANDLE hMutex = CreateMutex(NULL, FALSE, mutex_name);
-    if (hMutex == NULL) {
-        escrever_log("", "", "erro");
-        std::cerr << "Erro ao criar o mutex: " << GetLastError() << std::endl;
-        UnmapViewOfFile(pBuf);
-        CloseHandle(hMapFile);
-        return 1;
-    }
-
-    // --- PASSO 5: OBTER DADOS E INICIAR O PROCESSO FILHO ---
-    std::string mensagem;
-    std::cout << "Digite a mensagem para enviar via Memoria Compartilhada:" << std::endl;
-    std::getline(std::cin, mensagem);
-
-    // CreateProcessA inicia um novo processo (nosso leitor).
-    STARTUPINFOA si = { sizeof(si) };
-    PROCESS_INFORMATION pi;
-    std::string cmdLine = "processo_leitor.exe";
-
-    if (!CreateProcessA(NULL, &cmdLine[0], NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        escrever_log(mensagem, "", "erro");
-        std::cerr << "Erro ao criar processo filho." << std::endl;
-        CloseHandle(hMutex); // Limpeza de recursos em caso de falha
-        UnmapViewOfFile(pBuf);
-        CloseHandle(hMapFile);
-        return 1;
-    }
-
-    // --- PASSO 6: ESCREVER NA MEMÓRIA (SEÇÃO CRÍTICA) ---
-    std::cout << "Aguardando para escrever na memoria..." << std::endl;
-    // WaitForSingleObject aguarda até que o mutex esteja livre e o trava.
-    WaitForSingleObject(hMutex, INFINITE); 
-    
-    // -- INÍCIO DA SEÇÃO CRÍTICA --
-    // Apenas este processo pode executar este trecho de código por vez.
-    CopyMemory((PVOID)pBuf->message, mensagem.c_str(), (mensagem.size() + 1));
-    // -- FIM DA SEÇÃO CRÍTICA --
-    
-    // ReleaseMutex libera o mutex, permitindo que outros processos o utilizem.
-    ReleaseMutex(hMutex); 
-    std::cout << "Mensagem escrita na memoria." << std::endl;
-
-    // --- PASSO 7: AGUARDAR E FINALIZAR ---
-    // Aguarda o processo leitor terminar sua execução antes de continuar.
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    std::cout << "Processo leitor terminou." << std::endl;
-
-    // Escreve o log final de sucesso.
-    escrever_log(mensagem, mensagem, "sucesso");
-
-    // --- PASSO 8: LIMPEZA DE RECURSOS ---
-    // Fecha todos os handles e libera a memória mapeada para evitar vazamentos de recursos.
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    CloseHandle(hMutex);
-    UnmapViewOfFile(pBuf);
-    CloseHandle(hMapFile);
-
-    return 0;
 }
