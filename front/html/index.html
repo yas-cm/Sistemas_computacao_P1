@@ -5,6 +5,13 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Comunicação entre processos</title>
         <link rel="stylesheet" href="../style/style.css" />
+        <style>
+            .log-entry.switch {
+                border-left-color: #ff9800;
+                background-color: #fff3e0;
+                font-weight: bold;
+            }
+        </style>
     </head>
     <body>
         <h1>Comunicação entre processos</h1>
@@ -134,6 +141,47 @@
                 // Scroll automático para o topo
                 logDisplay.scrollTop = 0;
             }
+
+            // Limpar mensagem e processos ao trocar de tipo de comunicação
+            document
+                .getElementById("tipo-comunicacao")
+                .addEventListener("change", async function () {
+                    const tipoAnterior =
+                        this.getAttribute("data-tipo-anterior") || "pipes";
+                    const novoTipo = this.value;
+
+                    // Limpar campos de texto
+                    document.getElementById("enviar-msg").value = "";
+                    document.getElementById("receber-msg").value = "";
+
+                    // Finalizar processos do tipo anterior
+                    try {
+                        await fetch("/limpar", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ tipo: tipoAnterior }),
+                        });
+                    } catch (error) {
+                        console.log("Erro ao limpar processos:", error);
+                    }
+
+                    // Atualizar tipo anterior
+                    this.setAttribute("data-tipo-anterior", novoTipo);
+
+                    const { sender, receiver } = processNames[novoTipo] || {};
+
+                    if (sender && receiver) {
+                        addLogEntry(
+                            `🔄 Alterado para comunicação via ${novoTipo.toUpperCase()} (${sender} → ${receiver}) - Processos anteriores finalizados`,
+                            "switch"
+                        );
+                    }
+                });
+
+            // Inicializar com pipes como tipo anterior
+            document
+                .getElementById("tipo-comunicacao")
+                .setAttribute("data-tipo-anterior", "pipes");
 
             // Inicializa o log com mensagem informativa
             addLogEntry(
