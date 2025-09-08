@@ -14,7 +14,7 @@
 
 std::atomic<bool> server_running(true);
 
-// Thread Pool para gerenciar conexões
+// Thread Pool para gerenciar conexões concorrentes
 class ThreadPool {
 private:
     std::vector<std::thread> workers;
@@ -78,6 +78,7 @@ void escrever_log(const std::string& mensagem_enviada, const std::string& mensag
     log.close();
 }
 
+// Função que processa cada cliente conectado
 void handle_client(SOCKET client_socket) {
     char buffer[1024];
     int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
@@ -86,7 +87,7 @@ void handle_client(SOCKET client_socket) {
         buffer[bytes_received] = '\0';
         std::string mensagem_recebida(buffer);
         
-        // Envia a mesma mensagem de volta (echo)
+        // Envia a mesma mensagem de volta (servidor echo)
         send(client_socket, mensagem_recebida.c_str(), mensagem_recebida.size(), 0);
         
         escrever_log(mensagem_recebida, mensagem_recebida, "sucesso");
@@ -97,10 +98,11 @@ void handle_client(SOCKET client_socket) {
 }
 
 int main() {
-    // Inicializar thread pool com 4 threads
+    // Inicializar thread pool com 4 threads para conexões concorrentes
     ThreadPool pool(4);
     std::cout << "Thread Pool inicializado com 4 threads" << std::endl;
 
+    // Inicialização do Winsock
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         escrever_log("", "", "erro");
@@ -108,6 +110,7 @@ int main() {
         return 1;
     }
 
+    // Cria socket TCP
     SOCKET server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == INVALID_SOCKET) {
         escrever_log("", "", "erro");
@@ -122,11 +125,13 @@ int main() {
         std::cerr << "Erro ao configurar socket options." << std::endl;
     }
 
+    // Configura endereço do servidor
     sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(8888);
+    server_addr.sin_addr.s_addr = INADDR_ANY; // Aceita conexões de qualquer IP
+    server_addr.sin_port = htons(8888); // Porta 8888
 
+    // Bind do socket ao endereço
     if (bind(server_socket, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
         escrever_log("", "", "erro");
         std::cerr << "Falha ao bind socket. Porta 8888 pode estar em uso." << std::endl;
@@ -135,6 +140,7 @@ int main() {
         return 1;
     }
 
+    // Escuta por conexões
     if (listen(server_socket, SOMAXCONN) == SOCKET_ERROR) {
         escrever_log("", "", "erro");
         std::cerr << "Falha ao escutar no socket." << std::endl;
@@ -147,7 +153,7 @@ int main() {
     std::cout << "Usando Thread Pool para gerenciar conexões" << std::endl;
     escrever_log("", "", "servidor_iniciado");
 
-    // Configurar timeout para aceitar conexões
+    // Loop principal do servidor com select para timeout
     fd_set readfds;
     timeval timeout;
 
@@ -155,7 +161,7 @@ int main() {
         FD_ZERO(&readfds);
         FD_SET(server_socket, &readfds);
         
-        timeout.tv_sec = 1;
+        timeout.tv_sec = 1; // Timeout de 1 segundo
         timeout.tv_usec = 0;
         
         int activity = select(0, &readfds, NULL, NULL, &timeout);
@@ -169,7 +175,7 @@ int main() {
             SOCKET client_socket = accept(server_socket, (sockaddr*)&client_addr, &client_size);
             
             if (client_socket != INVALID_SOCKET) {
-                // Usar thread pool em vez de criar thread para cada conexão
+                // Enfileira cliente no thread pool
                 pool.enqueue([client_socket] {
                     handle_client(client_socket);
                 });
@@ -180,7 +186,7 @@ int main() {
 
     std::cout << "Finalizando servidor socket..." << std::endl;
     
-    // O destrutor do ThreadPool fará o join das threads automaticamente
+    // Limpeza de recursos
     closesocket(server_socket);
     WSACleanup();
     
