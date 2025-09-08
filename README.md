@@ -88,6 +88,10 @@ g++ back/shared_memory/processo_leitor.cpp -o back/shared_memory/processo_leitor
 ```bash
 start_tudo.bat
 ```
+---
+```bash
+URL: http://localhost:3000/index.html
+```
 
 ---
 
