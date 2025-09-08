@@ -2,13 +2,71 @@
 #include <iostream>
 #include <string>
 #include <fstream>
+#include <vector>
+#include <queue>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <atomic>
-#include <csignal>
+#include <functional>
 
 #pragma comment(lib, "ws2_32.lib")
 
 std::atomic<bool> server_running(true);
+
+// Thread Pool para gerenciar conexões
+class ThreadPool {
+private:
+    std::vector<std::thread> workers;
+    std::queue<std::function<void()>> tasks;
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    bool stop;
+
+public:
+    ThreadPool(size_t threads) : stop(false) {
+        for (size_t i = 0; i < threads; ++i) {
+            workers.emplace_back([this] {
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+                        this->condition.wait(lock, [this] {
+                            return this->stop || !this->tasks.empty();
+                        });
+                        if (this->stop && this->tasks.empty()) return;
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                    }
+                    task();
+                }
+            });
+        }
+    }
+
+    template<class F>
+    void enqueue(F&& task) {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            if (stop) return;
+            tasks.emplace(std::forward<F>(task));
+        }
+        condition.notify_one();
+    }
+
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            stop = true;
+        }
+        condition.notify_all();
+        for (std::thread &worker : workers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+};
 
 void escrever_log(const std::string& mensagem_enviada, const std::string& mensagem_recebida, const std::string& status) {
     std::ofstream log("log.json", std::ios::trunc);
@@ -20,11 +78,6 @@ void escrever_log(const std::string& mensagem_enviada, const std::string& mensag
     log.close();
 }
 
-void signal_handler(int signal) {
-    server_running = false;
-    std::cout << "Recebido sinal de desligamento. Finalizando servidor..." << std::endl;
-}
-
 void handle_client(SOCKET client_socket) {
     char buffer[1024];
     int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
@@ -33,21 +86,20 @@ void handle_client(SOCKET client_socket) {
         buffer[bytes_received] = '\0';
         std::string mensagem_recebida(buffer);
         
-        // Envia a mesma mensagem de volta (echo) - sem "ACK: "
+        // Envia a mesma mensagem de volta (echo)
         send(client_socket, mensagem_recebida.c_str(), mensagem_recebida.size(), 0);
         
         escrever_log(mensagem_recebida, mensagem_recebida, "sucesso");
-        std::cout << "Mensagem recebida e retornada: " << mensagem_recebida << std::endl;
-    } else {
-        std::cout << "Conexão fechada pelo cliente ou erro na recepção." << std::endl;
+        std::cout << "Mensagem recebida: " << mensagem_recebida << std::endl;
     }
     
     closesocket(client_socket);
 }
 
 int main() {
-    // Configurar handler para Ctrl+C
-    std::signal(SIGINT, signal_handler);
+    // Inicializar thread pool com 4 threads
+    ThreadPool pool(4);
+    std::cout << "Thread Pool inicializado com 4 threads" << std::endl;
 
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -77,7 +129,7 @@ int main() {
 
     if (bind(server_socket, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
         escrever_log("", "", "erro");
-        std::cerr << "Falha ao bind socket. Porta 8888可能 estar em uso." << std::endl;
+        std::cerr << "Falha ao bind socket. Porta 8888 pode estar em uso." << std::endl;
         closesocket(server_socket);
         WSACleanup();
         return 1;
@@ -92,16 +144,17 @@ int main() {
     }
 
     std::cout << "Servidor socket iniciado na porta 8888..." << std::endl;
-    std::cout << "Pressione Ctrl+C para finalizar o servidor." << std::endl;
+    std::cout << "Usando Thread Pool para gerenciar conexões" << std::endl;
     escrever_log("", "", "servidor_iniciado");
 
+    // Configurar timeout para aceitar conexões
+    fd_set readfds;
+    timeval timeout;
+
     while (server_running) {
-        // Configurar timeout para aceitar conexões (para poder verificar server_running)
-        fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(server_socket, &readfds);
         
-        timeval timeout;
         timeout.tv_sec = 1;
         timeout.tv_usec = 0;
         
@@ -111,24 +164,23 @@ int main() {
             std::cerr << "Erro no select." << std::endl;
             break;
         } else if (activity > 0 && FD_ISSET(server_socket, &readfds)) {
-            // Aceitar conexão
             sockaddr_in client_addr;
             int client_size = sizeof(client_addr);
             SOCKET client_socket = accept(server_socket, (sockaddr*)&client_addr, &client_size);
             
             if (client_socket != INVALID_SOCKET) {
-                std::cout << "Cliente conectado: " << inet_ntoa(client_addr.sin_addr) << ":" << ntohs(client_addr.sin_port) << std::endl;
-                std::thread(handle_client, client_socket).detach();
-            } else {
-                std::cerr << "Falha ao aceitar conexão." << std::endl;
+                // Usar thread pool em vez de criar thread para cada conexão
+                pool.enqueue([client_socket] {
+                    handle_client(client_socket);
+                });
+                std::cout << "Conexao aceita e enfileirada no thread pool" << std::endl;
             }
         }
-        // Se activity == 0, timeout ocorreu - verificar server_running novamente
     }
 
     std::cout << "Finalizando servidor socket..." << std::endl;
     
-    // Limpar recursos
+    // O destrutor do ThreadPool fará o join das threads automaticamente
     closesocket(server_socket);
     WSACleanup();
     
