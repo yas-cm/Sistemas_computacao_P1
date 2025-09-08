@@ -15,14 +15,14 @@
     </head>
     <body>
         <h1>Comunicação entre processos</h1>
-        <h4>Yasmin Cardoso Magagnin</h4>
+        <h4>Sistema Integrado de IPC</h4>
 
         <div class="main-container">
             <div class="form-container">
                 <label for="tipo-comunicacao">Tipo de comunicação:</label>
                 <select id="tipo-comunicacao">
-                    <option value="pipes">Pipes</option>
-                    <option value="socket">Sockets</option>
+                    <option value="pipes">Pipes Anônimos</option>
+                    <option value="socket">Sockets Locais</option>
                     <option value="memcomp">Memória Compartilhada</option>
                 </select>
 
@@ -33,9 +33,9 @@
                     placeholder="Digite sua mensagem aqui..."
                 ></textarea>
 
-                <button id="btn-enviar" type="button">Enviar</button>
+                <button id="btn-enviar" type="button">Enviar Mensagem</button>
 
-                <label for="receber-msg">Receber mensagem:</label>
+                <label for="receber-msg">Mensagem recebida:</label>
                 <textarea
                     id="receber-msg"
                     rows="3"
@@ -47,7 +47,7 @@
             <div class="log-container">
                 <label for="log-display">Log da Comunicação:</label>
                 <div id="log-display" class="log-content">
-                    <div class="log-entry">
+                    <div class="log-entry info">
                         Sistema iniciado. Aguardando mensagens...
                     </div>
                 </div>
@@ -59,23 +59,42 @@
             const processNames = {
                 pipes: { sender: "Processo1", receiver: "Processo2" },
                 socket: { sender: "Cliente", receiver: "Servidor" },
-                memcomp: { sender: "ProcessoA", receiver: "ProcessoB" },
+                memcomp: { sender: "Escritor", receiver: "Leitor" },
+            };
+
+            // Mapeamento de tipos de comunicação para descrições
+            const commDescriptions = {
+                pipes: "Pipes Anônimos",
+                socket: "Sockets Locais",
+                memcomp: "Memória Compartilhada",
             };
 
             document.getElementById("btn-enviar").onclick = async function () {
                 const mensagem = document.getElementById("enviar-msg").value;
                 const tipo = document.getElementById("tipo-comunicacao").value;
 
+                if (!mensagem.trim()) {
+                    addLogEntry(
+                        "❌ Erro: Digite uma mensagem para enviar",
+                        "error"
+                    );
+                    return;
+                }
+
                 if (!processNames[tipo]) {
-                    alert("Selecione um tipo de comunicação válido!");
+                    addLogEntry(
+                        "❌ Erro: Selecione um tipo de comunicação válido",
+                        "error"
+                    );
                     return;
                 }
 
                 const { sender, receiver } = processNames[tipo];
+                const commType = commDescriptions[tipo];
 
                 document.getElementById("receber-msg").value = "Enviando...";
                 addLogEntry(
-                    `${sender} enviando mensagem: "${mensagem}" via ${tipo}`,
+                    `📤 ${sender} enviando: "${mensagem}" via ${commType}`,
                     "info"
                 );
 
@@ -93,15 +112,25 @@
                             data.mensagem_recebida ||
                             data.mensagem ||
                             "Mensagem recebida";
-                        addLogEntry(
-                            `✅ Sucesso: Mensagem "${data.mensagem_enviada}" enviada pelo ${sender} e "${data.mensagem_recebida}" recebida pelo ${receiver}`,
-                            "success"
-                        );
+
+                        // Mensagem personalizada para cada tipo de comunicação
+                        let successMessage;
+                        if (tipo === "pipes") {
+                            successMessage = `✅ Sucesso via Pipes: ${sender} enviou: "${data.mensagem_enviada}", ${receiver} recebeu: "${data.mensagem_recebida}"`;
+                        } else if (tipo === "socket") {
+                            successMessage = `✅ Sucesso via Sockets: ${sender} enviou: "${data.mensagem_enviada}", ${receiver} recebeu: "${data.mensagem_recebida}"`;
+                        } else if (tipo === "memcomp") {
+                            successMessage = `✅ Sucesso via Memória Compartilhada: ${sender} escreveu: "${data.mensagem_enviada}", ${receiver} leu: "${data.mensagem_recebida}"`;
+                        }
+
+                        addLogEntry(successMessage, "success");
                     } else {
                         document.getElementById("receber-msg").value =
                             "Erro ao receber mensagem";
                         addLogEntry(
-                            `❌ Erro: Falha na comunicação via ${tipo} entre ${sender} e ${receiver}`,
+                            `❌ Erro na comunicação via ${
+                                commDescriptions[tipo]
+                            }: ${data.mensagem || "Erro desconhecido"}`,
                             "error"
                         );
                     }
@@ -120,7 +149,7 @@
                 const logEntry = document.createElement("div");
                 logEntry.className = `log-entry ${type}`;
 
-                // Adiciona milissegundos ao timestamp
+                // Adiciona timestamp com milissegundos
                 const now = new Date();
                 const hours = now.getHours().toString().padStart(2, "0");
                 const minutes = now.getMinutes().toString().padStart(2, "0");
@@ -169,10 +198,11 @@
                     this.setAttribute("data-tipo-anterior", novoTipo);
 
                     const { sender, receiver } = processNames[novoTipo] || {};
+                    const commType = commDescriptions[novoTipo];
 
                     if (sender && receiver) {
                         addLogEntry(
-                            `🔄 Alterado para comunicação via ${novoTipo.toUpperCase()} (${sender} → ${receiver}) - Processos anteriores finalizados`,
+                            `🔄 Alterado para: ${commType} (${sender} → ${receiver}) - Processos anteriores finalizados`,
                             "switch"
                         );
                     }
@@ -185,7 +215,7 @@
 
             // Inicializa o log com mensagem informativa
             addLogEntry(
-                "Sistema iniciado. Selecione o tipo de comunicação e digite uma mensagem.",
+                "Sistema integrado de IPC iniciado. Selecione o tipo de comunicação.",
                 "info"
             );
         </script>
