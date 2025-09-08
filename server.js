@@ -10,7 +10,12 @@ app.use(express.json());
 const commPaths = {
     pipes: path.join(__dirname, "back", "pipes", "processo1.exe"),
     socket: path.join(__dirname, "back", "sockets", "socket_client.exe"),
-    memcomp: path.join(__dirname, "back", "shared_memory", "processA.exe"),
+    memcomp: path.join(
+        __dirname,
+        "back",
+        "shared_memory",
+        "processo_escritor.exe"
+    ),
 };
 
 const commDirs = {
@@ -76,8 +81,8 @@ app.post("/enviar", (req, res) => {
     if (tipo === "pipes") {
         const processo = spawn(commPaths[tipo], [], {
             cwd: commDirs[tipo],
-            windowsHide: true, // Não mostrar janela do CMD
-            stdio: ["pipe", "ignore", "ignore"], // Redirecionar stdin, ignorar stdout/stderr
+            windowsHide: true,
+            stdio: ["pipe", "ignore", "ignore"],
         });
 
         activeProcesses.pipes = processo;
@@ -103,8 +108,7 @@ app.post("/enviar", (req, res) => {
                     const log = JSON.parse(data);
                     res.json({
                         status: log.status,
-                        mensagem:
-                            log.mensagem_recebida || log.mensagem_enviada || "",
+                        mensagem: log.mensagem_recebida || "",
                         mensagem_enviada: log.mensagem_enviada || mensagem,
                         mensagem_recebida: log.mensagem_recebida || "",
                     });
@@ -123,8 +127,8 @@ app.post("/enviar", (req, res) => {
     else if (tipo === "socket") {
         const processo = spawn(commPaths[tipo], [mensagem], {
             cwd: commDirs[tipo],
-            windowsHide: true, // Não mostrar janela do CMD
-            stdio: ["ignore", "ignore", "ignore"], // Ignorar todo o stdio
+            windowsHide: true,
+            stdio: ["ignore", "ignore", "ignore"],
         });
 
         activeProcesses.socket = processo;
@@ -146,8 +150,7 @@ app.post("/enviar", (req, res) => {
                     const log = JSON.parse(data);
                     res.json({
                         status: log.status,
-                        mensagem:
-                            log.mensagem_recebida || log.mensagem_enviada || "",
+                        mensagem: log.mensagem_recebida || "",
                         mensagem_enviada: log.mensagem_enviada || mensagem,
                         mensagem_recebida: log.mensagem_recebida || "",
                     });
@@ -172,13 +175,50 @@ app.post("/enviar", (req, res) => {
             });
         });
     }
-    // Processamento para Memória Compartilhada (em desenvolvimento)
+    // Processamento para Memória Compartilhada
     else if (tipo === "memcomp") {
-        return res.json({
-            status: "erro",
-            mensagem: "Tipo de comunicação em desenvolvimento",
-            mensagem_enviada: mensagem,
-            mensagem_recebida: "",
+        const processo = spawn(commPaths[tipo], [], {
+            cwd: commDirs[tipo],
+            windowsHide: true,
+            stdio: ["pipe", "ignore", "ignore"],
+        });
+
+        activeProcesses.memcomp = processo;
+
+        // Envia a mensagem para o processo pelo stdin
+        processo.stdin.write(mensagem + "\n");
+        processo.stdin.end();
+
+        // Aguarda o processo terminar e lê o log.json
+        processo.on("close", () => {
+            activeProcesses.memcomp = null;
+            const logPath = path.join(commDirs[tipo], "log.json");
+            fs.readFile(logPath, "utf8", (err, data) => {
+                if (err) {
+                    return res.json({
+                        status: "erro",
+                        mensagem: "Erro ao ler arquivo de log",
+                        mensagem_enviada: mensagem,
+                        mensagem_recebida: "",
+                    });
+                }
+                try {
+                    const log = JSON.parse(data);
+                    res.json({
+                        status: log.status,
+                        mensagem: log.mensagem_recebida || "",
+                        mensagem_enviada: log.mensagem_enviada || mensagem,
+                        mensagem_recebida: log.mensagem_recebida || "",
+                    });
+                } catch (parseError) {
+                    res.json({
+                        status: "erro",
+                        mensagem: "Erro ao processar log",
+                        mensagem_enviada: mensagem,
+                        mensagem_recebida: "",
+                    });
+                }
+            });
         });
     }
     // Tipo não reconhecido
@@ -249,8 +289,8 @@ function startSocketServer() {
             socketServerProcess = spawn(socketServerPath, [], {
                 cwd: socketServerDir,
                 detached: true,
-                windowsHide: true, // Não mostrar janela
-                stdio: "ignore", // Ignorar toda a saída
+                windowsHide: true,
+                stdio: "ignore",
             });
             socketServerProcess.unref();
             console.log(
