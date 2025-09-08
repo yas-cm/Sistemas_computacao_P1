@@ -6,7 +6,7 @@ const path = require("path");
 const app = express();
 app.use(express.json());
 
-// Caminhos para os executáveis de cada tipo de comunicação
+// Configuração dos caminhos dos executáveis C++ para cada tipo de IPC
 const commPaths = {
     pipes: path.join(__dirname, "back", "pipes", "processo1.exe"),
     socket: path.join(__dirname, "back", "sockets", "socket_client.exe"),
@@ -18,22 +18,23 @@ const commPaths = {
     ),
 };
 
+// Diretórios de trabalho para cada processo
 const commDirs = {
     pipes: path.join(__dirname, "back", "pipes"),
     socket: path.join(__dirname, "back", "sockets"),
     memcomp: path.join(__dirname, "back", "shared_memory"),
 };
 
-// Variáveis para controlar processos ativos
+// Controle de processos ativos por tipo de comunicação
 let activeProcesses = {
     pipes: null,
     socket: null,
     memcomp: null,
 };
 
-let socketServerProcess = null;
+let socketServerProcess = null; // Processo do servidor socket
 
-// Função para finalizar processos ativos
+// Limpa processos ativos para evitar conflitos
 function cleanupProcesses() {
     Object.keys(activeProcesses).forEach((tipo) => {
         if (activeProcesses[tipo]) {
@@ -44,10 +45,9 @@ function cleanupProcesses() {
     });
 }
 
-// Função para finalizar servidor socket
+// Para o servidor socket usando taskkill do Windows
 function stopSocketServer() {
     if (socketServerProcess) {
-        // Usar taskkill para finalizar silenciosamente
         exec(`taskkill /f /im socket_server.exe /t`, (error) => {
             if (error) {
                 console.log("Servidor socket já finalizado ou não encontrado");
@@ -59,12 +59,12 @@ function stopSocketServer() {
     }
 }
 
-// Endpoint para enviar mensagem
+// Endpoint principal para enviar mensagens via IPC
 app.post("/enviar", (req, res) => {
     const mensagem = req.body.mensagem || "";
     const tipo = req.body.tipo || "pipes";
 
-    // Verifica se o tipo é suportado
+    // Validação do tipo de comunicação
     if (!commPaths[tipo] || !commDirs[tipo]) {
         return res.json({
             status: "erro",
@@ -74,36 +74,34 @@ app.post("/enviar", (req, res) => {
         });
     }
 
-    // Finaliza processos anteriores antes de iniciar novo
-    cleanupProcesses();
+    cleanupProcesses(); // Limpa processos anteriores
 
-    // Processamento para Pipes
+    // --- PROCESSAMENTO PARA PIPES ---
     if (tipo === "pipes") {
         const processo = spawn(commPaths[tipo], [], {
             cwd: commDirs[tipo],
-            windowsHide: true,
-            stdio: ["pipe", "ignore", "ignore"],
+            windowsHide: true, // Esconde janela do CMD
+            stdio: ["pipe", "ignore", "ignore"], // stdin, stdout, stderr
         });
 
         activeProcesses.pipes = processo;
 
-        // Envia a mensagem para o processo pelo stdin
+        // Envia mensagem via stdin para o processo1.exe
         processo.stdin.write(mensagem + "\n");
         processo.stdin.end();
 
-        // Aguarda o processo terminar e lê o log.json
+        // Aguarda término e lê log.json gerado
         processo.on("close", () => {
             activeProcesses.pipes = null;
             const logPath = path.join(commDirs[tipo], "log.json");
             fs.readFile(logPath, "utf8", (err, data) => {
-                if (err) {
-                    return res.json({
-                        status: "erro",
-                        mensagem: "Erro ao ler arquivo de log",
-                        mensagem_enviada: mensagem,
-                        mensagem_recebida: "",
-                    });
-                }
+                if (err)
+                    return handleLogError(
+                        res,
+                        mensagem,
+                        "Erro ao ler arquivo de log"
+                    );
+
                 try {
                     const log = JSON.parse(data);
                     res.json({
@@ -113,19 +111,15 @@ app.post("/enviar", (req, res) => {
                         mensagem_recebida: log.mensagem_recebida || "",
                     });
                 } catch (parseError) {
-                    res.json({
-                        status: "erro",
-                        mensagem: "Erro ao processar log",
-                        mensagem_enviada: mensagem,
-                        mensagem_recebida: "",
-                    });
+                    handleLogError(res, mensagem, "Erro ao processar log");
                 }
             });
         });
     }
-    // Processamento para Sockets
+    // --- PROCESSAMENTO PARA SOCKETS ---
     else if (tipo === "socket") {
         const processo = spawn(commPaths[tipo], [mensagem], {
+            // Mensagem como argumento
             cwd: commDirs[tipo],
             windowsHide: true,
             stdio: ["ignore", "ignore", "ignore"],
@@ -133,19 +127,17 @@ app.post("/enviar", (req, res) => {
 
         activeProcesses.socket = processo;
 
-        // Aguarda o processo terminar e lê o log.json
         processo.on("close", (code) => {
             activeProcesses.socket = null;
             const logPath = path.join(commDirs[tipo], "log.json");
             fs.readFile(logPath, "utf8", (err, data) => {
-                if (err) {
-                    return res.json({
-                        status: "erro",
-                        mensagem: "Erro ao ler arquivo de log",
-                        mensagem_enviada: mensagem,
-                        mensagem_recebida: "",
-                    });
-                }
+                if (err)
+                    return handleLogError(
+                        res,
+                        mensagem,
+                        "Erro ao ler arquivo de log"
+                    );
+
                 try {
                     const log = JSON.parse(data);
                     res.json({
@@ -155,12 +147,7 @@ app.post("/enviar", (req, res) => {
                         mensagem_recebida: log.mensagem_recebida || "",
                     });
                 } catch (parseError) {
-                    res.json({
-                        status: "erro",
-                        mensagem: "Erro ao processar log",
-                        mensagem_enviada: mensagem,
-                        mensagem_recebida: "",
-                    });
+                    handleLogError(res, mensagem, "Erro ao processar log");
                 }
             });
         });
@@ -175,7 +162,7 @@ app.post("/enviar", (req, res) => {
             });
         });
     }
-    // Processamento para Memória Compartilhada
+    // --- PROCESSAMENTO PARA MEMÓRIA COMPARTILHADA ---
     else if (tipo === "memcomp") {
         const processo = spawn(commPaths[tipo], [], {
             cwd: commDirs[tipo],
@@ -185,23 +172,21 @@ app.post("/enviar", (req, res) => {
 
         activeProcesses.memcomp = processo;
 
-        // Envia a mensagem para o processo pelo stdin
+        // Envia mensagem via stdin para o processo_escritor.exe
         processo.stdin.write(mensagem + "\n");
         processo.stdin.end();
 
-        // Aguarda o processo terminar e lê o log.json
         processo.on("close", () => {
             activeProcesses.memcomp = null;
             const logPath = path.join(commDirs[tipo], "log.json");
             fs.readFile(logPath, "utf8", (err, data) => {
-                if (err) {
-                    return res.json({
-                        status: "erro",
-                        mensagem: "Erro ao ler arquivo de log",
-                        mensagem_enviada: mensagem,
-                        mensagem_recebida: "",
-                    });
-                }
+                if (err)
+                    return handleLogError(
+                        res,
+                        mensagem,
+                        "Erro ao ler arquivo de log"
+                    );
+
                 try {
                     const log = JSON.parse(data);
                     res.json({
@@ -211,17 +196,12 @@ app.post("/enviar", (req, res) => {
                         mensagem_recebida: log.mensagem_recebida || "",
                     });
                 } catch (parseError) {
-                    res.json({
-                        status: "erro",
-                        mensagem: "Erro ao processar log",
-                        mensagem_enviada: mensagem,
-                        mensagem_recebida: "",
-                    });
+                    handleLogError(res, mensagem, "Erro ao processar log");
                 }
             });
         });
     }
-    // Tipo não reconhecido
+    // --- TIPO NÃO RECONHECIDO ---
     else {
         return res.json({
             status: "erro",
@@ -232,7 +212,17 @@ app.post("/enviar", (req, res) => {
     }
 });
 
-// Endpoint para limpar/parar processos
+// Função auxiliar para tratamento de erro de log
+function handleLogError(res, mensagem, erro) {
+    res.json({
+        status: "erro",
+        mensagem: erro,
+        mensagem_enviada: mensagem,
+        mensagem_recebida: "",
+    });
+}
+
+// Endpoint para limpar/parar processos específicos ou todos
 app.post("/limpar", (req, res) => {
     const tipo = req.body.tipo;
 
@@ -244,7 +234,6 @@ app.post("/limpar", (req, res) => {
             mensagem: `Processo ${tipo} finalizado`,
         });
     } else if (!tipo) {
-        // Limpa todos os processos
         cleanupProcesses();
         res.json({
             status: "sucesso",
@@ -258,20 +247,19 @@ app.post("/limpar", (req, res) => {
     }
 });
 
-// Servir arquivos estáticos do front-end
+// Servir arquivos estáticos do frontend (HTML, CSS, JS)
 app.use(express.static(path.join(__dirname, "front")));
 
-// Rota para servir o index.html na raiz
+// Rotas para servir a interface web
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "front", "html", "index.html"));
 });
 
-// Rota para servir o index.html explicitamente
 app.get("/index.html", (req, res) => {
     res.sendFile(path.join(__dirname, "front", "html", "index.html"));
 });
 
-// Inicializar servidor socket em segundo plano sem janela
+// Inicializa servidor socket em segundo plano
 function startSocketServer() {
     try {
         const socketServerPath = path.join(
@@ -288,17 +276,17 @@ function startSocketServer() {
             );
             socketServerProcess = spawn(socketServerPath, [], {
                 cwd: socketServerDir,
-                detached: true,
-                windowsHide: true,
-                stdio: "ignore",
+                detached: true, // Processo independente
+                windowsHide: true, // Janela escondida
+                stdio: "ignore", // Ignora entrada/saída
             });
-            socketServerProcess.unref();
+            socketServerProcess.unref(); // Permite que Node.js termine independentemente
             console.log(
                 "Servidor socket iniciado silenciosamente na porta 8888"
             );
         } else {
             console.log(
-                "Servidor socket não encontrado. Certifique-se de compilar os arquivos C++ primeiro."
+                "Servidor socket não encontrado. Compile os arquivos C++ primeiro."
             );
         }
     } catch (error) {
@@ -306,10 +294,10 @@ function startSocketServer() {
     }
 }
 
-// Iniciar servidor socket
+// Inicia servidor socket automaticamente
 startSocketServer();
 
-// Graceful shutdown
+// Shutdown graceful - limpa recursos ao terminar
 process.on("SIGINT", () => {
     console.log("\nFinalizando processos...");
     cleanupProcesses();
@@ -317,6 +305,7 @@ process.on("SIGINT", () => {
     process.exit(0);
 });
 
+// Inicia servidor web na porta 3000
 app.listen(3000, () => {
     console.log("Servidor Node.js rodando em http://localhost:3000");
     console.log("Todos os processos serão executados sem abrir janelas do CMD");
