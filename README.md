@@ -88,3 +88,13 @@ g++ back/shared_memory/processo_leitor.cpp -o back/shared_memory/processo_leitor
 ```bash
 start_tudo.bat
 ```
+
+---
+
+## 🎯 Utilização
+
+### 1. Selecione o mecanismo no frontend.
+
+### 2. Digite a mensagem e clique em Enviar.
+
+### 3. Veja o resultado e o log detalhado em tempo real.
