@@ -93,8 +93,6 @@ start_tudo.bat
 
 ## 🎯 Utilização
 
-### 1. Selecione o mecanismo no frontend.
-
-### 2. Digite a mensagem e clique em Enviar.
-
-### 3. Veja o resultado e o log detalhado em tempo real.
+#### 1. Selecione o mecanismo no frontend.
+#### 2. Digite a mensagem e clique em Enviar.
+#### 3. Veja o resultado e o log detalhado em tempo real.
